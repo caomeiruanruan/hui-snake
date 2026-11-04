@@ -22,7 +22,7 @@ import sys
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.3.1-py"
+VERSION = "0.3.4-py"
 SEAL_HARD = 260.0   # 「出口在对手脚下」且空间已经不够自己用的硬惩罚
 SEAL_W = 3.0        # 空间紧张时，每差一格的惩罚
 DIRS = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
@@ -186,6 +186,24 @@ def evaluate_moves(data):
             after = flood_size(oh[0], oh[1], b2, w, h)
             choke = max(0, opp_lead["before"] - after)
 
+        # 两步活口：这一步落下去之后，下一回合还有没有路可走。
+        # 只看当前空间会被骗——t245 那局四个方向都像 93，实际落点是个 13 格的死袋，
+        # 因为「门口」就是我自己的身体，动一步就关上了。
+        body_after = ([ (nx, ny) ] + my_body) if ate else ([ (nx, ny) ] + my_body[:-1])
+        blocked_after = set(blocked)
+        blocked_after.discard(key(*my_body[-1]))
+        blocked_after.add(key(nx, ny))
+        if ate:
+            blocked_after.add(key(*my_body[-1]))
+        best2 = 0
+        for ex2, ey2 in DIRS.values():
+            tx, ty = nx + ex2, ny + ey2
+            if not in_bounds(tx, ty, w, h) or key(tx, ty) in blocked_after:
+                continue
+            cand = flood_size(tx, ty, blocked_after, w, h)
+            if cand > best2:
+                best2 = cand
+
         score = space * 1.6
         if risky:
             score -= 900
@@ -202,10 +220,20 @@ def evaluate_moves(data):
             score -= 1e6
         elif space < my_len * 2:
             score -= (my_len * 2 - space) * 14
+        # 下一回合就没路的落点，等于提前进场，重罚
+        if best2 < my_len:
+            score -= 3000
+        elif best2 < my_len * 2:
+            score -= (my_len * 2 - best2) * 10
         # 封口：出口一旦在对手下一步能踩到的位置，这块空腔随时会缩水
-        if space_seal < my_len:
+        # 出口就在对手下一步能踩的位置，而这块空腔还装不下我 —— 这不是扣分能表达的，
+        # 直接标记成「禁止」，除非整盘棋没有别的选择（见 choose_move 的兜底）
+        # space_seal == 0 表示落点本身就是「门」——那是 risky 的事，不算被封；
+        # 只有 0 < space_seal < my_len 才是「进了个装不下自己的袋子」
+        seal_bad = 0 < space_seal < my_len
+        if seal_bad:
             score -= SEAL_HARD
-        elif space_seal < my_len * 2:
+        elif 0 < space_seal < my_len * 2:
             score -= (my_len * 2 - space_seal) * SEAL_W
         score -= wall
         if escape <= 1:
@@ -215,7 +243,7 @@ def evaluate_moves(data):
         score += choke * 2.5
 
         row.update(space=space, seal=space_seal, dfood=dfood, fdist=fdist,
-                   risky=risky, wall=wall, choke=choke, score=score)
+                   risky=risky, wall=wall, choke=choke, score=score, seal_bad=seal_bad)
         out.append(row)
 
     # —— 一层半：我走完之后，对手挑最伤我的一手，会把我的余地压成什么样
@@ -274,10 +302,12 @@ def evaluate_moves(data):
 
 def choose_move(data):
     pool = evaluate_moves(data)
-    for m in pool:
-        if m["feasible"]:
-            return m["move"]
-    return "up"
+    ok = [m for m in pool if m["feasible"]]
+    if not ok:
+        return "up"
+    # 「出口在对手脚下」的选项垫底：只有在没有别的活路时才用它
+    safe = [m for m in ok if not m.get("seal_bad")]
+    return (safe or ok)[0]["move"]
 
 
 INFO = {
