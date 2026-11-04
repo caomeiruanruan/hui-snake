@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: xiaohui-snake
+    name: hui-snake
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
