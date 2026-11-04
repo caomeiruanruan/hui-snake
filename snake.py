@@ -22,7 +22,7 @@ import sys
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.3.4-py"
+VERSION = "0.4.2-py"
 SEAL_HARD = 260.0   # 「出口在对手脚下」且空间已经不够自己用的硬惩罚
 SEAL_W = 3.0        # 空间紧张时，每差一格的惩罚
 DIRS = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
@@ -120,10 +120,13 @@ def evaluate_moves(data):
         self_ = body == my_body
         for seg in body:
             blocked.add(key(*seg))
-        blocked.discard(key(*body[-1]))  # 尾巴下一步会让开
+        blocked.discard(key(*body[-1]))  # 尾巴这一步会让开（除非它吃到了，见 blocked_after）
         nb = {key(body[0][0] + dx, body[0][1] + dy) for dx, dy in DIRS.values()}
         threats.append({"set": nb, "len": len(body), "head": body[0], "self": self_})
-    blocked |= hazards
+    # 毒格不是墙（Royale）：走进去会掉血，但路是通的。把「安全可走空间」单独算，
+    # 真正的墙 (=blocked) 和「会被毒缩掉的空间」(=blocked_hz) 分开评估。
+    has_hz = bool(hazards)
+    blocked_hz = blocked | hazards
 
     opp_lead = None
     for info in threats:
@@ -152,6 +155,8 @@ def evaluate_moves(data):
 
         ate = (nx, ny) in food
         space = flood_size(nx, ny, blocked, w, h)
+        # 有毒圈时，「空间」只算不进毒的那部分：毒圈会继续缩，站在毒里的地不属于我
+        space = flood_size(nx, ny, blocked_hz, w, h) if has_hz else space
         space_seal = flood_size(nx, ny, blocked_seal, w, h)
         dfood = min((abs(nx - fx) + abs(ny - fy) for fx, fy in food), default=10)
         fdist = food_dist((nx, ny), blocked, food, w, h)
@@ -204,7 +209,16 @@ def evaluate_moves(data):
             if cand > best2:
                 best2 = cand
 
+        if key(nx, ny) in hazards and my_health <= 15:
+            row["feasible"] = False
+            row["score"] = -1e9
+            out.append(row)
+            continue
+
         score = space * 1.6
+        if key(nx, ny) in hazards:
+            # 踩毒：血多还能扛，血少就是送命
+            score -= 600 if my_health <= 40 else 150
         if risky:
             score -= 900
         score += head_risk
