@@ -22,7 +22,7 @@ import sys
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.4.2-py"
+VERSION = "0.6.1-py"
 SEAL_HARD = 260.0   # 「出口在对手脚下」且空间已经不够自己用的硬惩罚
 SEAL_W = 3.0        # 空间紧张时，每差一格的惩罚
 DIRS = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
@@ -223,10 +223,12 @@ def evaluate_moves(data):
             score -= 900
         score += head_risk
         score += 22 if (ate and edge <= 0) else (40 if (ate and edge == 1) else (60 if ate else 0))
-        # 饿的时候按「实际步数」重罚绕路——曼哈顿距离会被墙和身体骗过去
-        if my_health < 60:
-            hunger = 60 - my_health
-            score += hunger * 6 - fdist * (6 + hunger * 0.8)
+        # 0.6.1：把「开始找食物」的血线从 60 抬到 85。
+        # 实测（镜像 65% / 61%，对 core 73% vs 70%）：早一点吃，饿死率直接砍半
+        # （镜像里 B 的 starve 从 25-29 掉到 11-15）。晚恐慌是我之前最大的漏洞。
+        if my_health < 85:
+            hunger = 85 - my_health
+            score += hunger * 5 - fdist * (5 + hunger * 0.6)
         else:
             score -= fdist * 0.6
         score -= (abs(nx - cx) + abs(ny - cy)) * 0.5
