@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-小洄的蛇（Battlesnake）—— Python 版，逻辑与 Cloudflare Worker 版 0.2.1 对齐。
+小洄的蛇（Battlesnake）—— Python 版。
+
+0.3.0 相对 0.2.1：食物按「实际步数」找（曼哈顿距离会被墙和身体骗），
+饿了按饥饿程度重罚绕路；并给「出口在对手脚下」的空腔加一点封口惩罚。
 
 跑起来：
     python -X utf8 snake.py --port 8095
@@ -19,7 +22,9 @@ import sys
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.2.1-py"
+VERSION = "0.3.0-py"
+SEAL_HARD = 260.0   # 「出口在对手脚下」且空间已经不够自己用的硬惩罚
+SEAL_W = 3.0        # 空间紧张时，每差一格的惩罚
 DIRS = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
 
 
@@ -49,6 +54,44 @@ def flood_size(x, y, blocked, w, h):
             n += 1
             q.append((nx, ny))
     return n
+
+
+def opp_seal(opp_heads, w, h):
+    """对手下一步能踩到的格子 = 可能被封死的出口。
+    静态 flood fill 会把这些出口当成永久通道：一个 25 格的空腔，出口却在对手
+    下一步的落点上，实际可用空间会在几回合内缩到只剩脚下。"""
+    z = set()
+    for oh in opp_heads:
+        for dx, dy in DIRS.values():
+            x, y = oh[0] + dx, oh[1] + dy
+            if in_bounds(x, y, w, h):
+                z.add(key(x, y))
+    return z
+
+
+def food_dist(start, blocked, food, w, h):
+    """到最近食物的实际步数（绕开身体走），没有食物则返回 99。"""
+    if not food:
+        return 99
+    goals = {key(x, y) for x, y in food}
+    if key(start[0], start[1]) in goals:
+        return 0
+    seen = {key(start[0], start[1])}
+    q = deque([(start[0], start[1], 0)])
+    while q:
+        cx, cy, d = q.popleft()
+        for dx, dy in DIRS.values():
+            nx, ny = cx + dx, cy + dy
+            k = key(nx, ny)
+            if not in_bounds(nx, ny, w, h) or k in seen:
+                continue
+            if k in goals:
+                return d + 1
+            if k in blocked:
+                continue
+            seen.add(k)
+            q.append((nx, ny, d + 1))
+    return 99
 
 
 def evaluate_moves(data):
@@ -91,11 +134,14 @@ def evaluate_moves(data):
             opp_lead = {"before": before, "info": info}
 
     cx, cy = (w - 1) / 2, (h - 1) / 2
+    opp_heads = [i["head"] for i in threats if not i["self"]]
+    seal = opp_seal(opp_heads, w, h)
+    blocked_seal = blocked | seal
     out = []
 
     for name, (dx, dy) in DIRS.items():
         nx, ny = my_head[0] + dx, my_head[1] + dy
-        row = {"move": name, "feasible": True, "score": 0.0, "space": 0,
+        row = {"move": name, "feasible": True, "score": 0.0, "space": 0, "seal": 0, "fdist": 99,
                "dfood": 99, "risky": False, "wall": 0, "choke": 0}
 
         if not in_bounds(nx, ny, w, h) or key(nx, ny) in blocked:
@@ -106,7 +152,9 @@ def evaluate_moves(data):
 
         ate = (nx, ny) in food
         space = flood_size(nx, ny, blocked, w, h)
+        space_seal = flood_size(nx, ny, blocked_seal, w, h)
         dfood = min((abs(nx - fx) + abs(ny - fy) for fx, fy in food), default=10)
+        fdist = food_dist((nx, ny), blocked, food, w, h)
 
         risky = False
         for info in threats:
@@ -150,15 +198,22 @@ def evaluate_moves(data):
             score -= 900
         score += head_risk
         score += 22 if (ate and edge <= 0) else (40 if (ate and edge == 1) else (60 if ate else 0))
-        if my_health < 45:
-            score += 90 - dfood * 6
+        # 饿的时候按「实际步数」重罚绕路——曼哈顿距离会被墙和身体骗过去
+        if my_health < 60:
+            hunger = 60 - my_health
+            score += hunger * 6 - fdist * (6 + hunger * 0.8)
         else:
-            score -= dfood * 0.6
+            score -= fdist * 0.6
         score -= (abs(nx - cx) + abs(ny - cy)) * 0.5
         if space < my_len:
             score -= 1e6
         elif space < my_len * 2:
             score -= (my_len * 2 - space) * 14
+        # 封口：出口一旦在对手下一步能踩到的位置，这块空腔随时会缩水
+        if space_seal < my_len:
+            score -= SEAL_HARD
+        elif space_seal < my_len * 2:
+            score -= (my_len * 2 - space_seal) * SEAL_W
         score -= wall
         if escape <= 1:
             score -= 45
@@ -166,7 +221,8 @@ def evaluate_moves(data):
             score -= 12
         score += choke * 2.5
 
-        row.update(space=space, dfood=dfood, risky=risky, wall=wall, choke=choke, score=score)
+        row.update(space=space, seal=space_seal, dfood=dfood, fdist=fdist,
+                   risky=risky, wall=wall, choke=choke, score=score)
         out.append(row)
 
     # —— 一层半：我走完之后，对手挑最伤我的一手，会把我的余地压成什么样
@@ -296,8 +352,9 @@ def selftest():
                 "body": [{"x": 1, "y": 1}, {"x": 1, "y": 0}, {"x": 0, "y": 0}]},
     }
     for r in evaluate_moves(data):
-        print("%-6s 空间%4d 食距%3d 分 %8.1f%s" % (
-            r["move"], r["space"], r["dfood"], r["score"], "" if r["feasible"] else "  (不可走)"))
+        print("%-6s 空间%4d 封口%4d 食步%3d 分 %8.1f%s" % (
+            r["move"], r["space"], r.get("seal", 0), r.get("fdist", 99), r["score"],
+            "" if r["feasible"] else "  (不可走)"))
     print("选择：", choose_move(data))
 
 
