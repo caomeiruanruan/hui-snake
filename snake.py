@@ -238,6 +238,9 @@ INFO = {
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 + Content-Length 才能保持长连接，省掉每次握手的往返
+    protocol_version = "HTTP/1.1"
+
     def _send(self, obj, code=200):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
