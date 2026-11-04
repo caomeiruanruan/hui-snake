@@ -1,0 +1,2 @@
+# 零依赖：只用了 Python 标准库（http.server / json / collections）。
+# 这个文件留着是为了让 Render 的 build 步骤有个东西可装。
