@@ -22,7 +22,7 @@ import sys
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.3.0-py"
+VERSION = "0.3.1-py"
 SEAL_HARD = 260.0   # 「出口在对手脚下」且空间已经不够自己用的硬惩罚
 SEAL_W = 3.0        # 空间紧张时，每差一格的惩罚
 DIRS = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
@@ -163,16 +163,9 @@ def evaluate_moves(data):
             if info["len"] >= my_len and key(nx, ny) in info["set"]:
                 risky = True
 
-        # 迎头危险区：按「离对手头几步」给梯度惩罚
+        # 迎头惩罚已撤（0.3.1）：原来的「离对手 2-4 格就扣分」会让蛇在食物旁边
+        # 一直后退，反而饿死。真正该怕的只有「下一步撞进对手头」，那件事交给 risky。
         head_risk = 0
-        for info in threats:
-            if info["self"]:
-                continue
-            d = abs(nx - info["head"][0]) + abs(ny - info["head"][1])
-            if d <= 1:
-                head_risk += 40 if my_len > info["len"] else -1200
-            elif d <= 4 and info["len"] >= my_len:
-                head_risk -= {2: 260, 3: 80, 4: 20}[d]
 
         # 贴边：贴墙/贴角是真陷阱
         edge = min(nx, w - 1 - nx, ny, h - 1 - ny)
